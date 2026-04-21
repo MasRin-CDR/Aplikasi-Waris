@@ -90,33 +90,6 @@ const DEFAULT_INPUT = {
 };
 
 const STORAGE_KEY = "waris-app-state";
-const API_BASE_URL = resolveApiBaseUrl();
-const FRONTEND_TO_BACKEND_FIELD_MAP = {
-  husband: "suami",
-  wives: "istri",
-  father: "ayah",
-  mother: "ibu",
-  paternalGrandfather: "kakek_ayah",
-  maternalGrandfather: "kakek_ibu",
-  paternalGrandmother: "nenek_ayah",
-  maternalGrandmother: "nenek_ibu",
-  sons: "anak_laki",
-  daughters: "anak_perempuan",
-  grandsons: "cucu_laki",
-  granddaughters: "cucu_perempuan",
-  greatGrandsons: "cicit_laki",
-  greatGranddaughters: "cicit_perempuan",
-  fullBrothers: "saudara_laki_kandung",
-  fullSisters: "saudara_perempuan_kandung",
-  paternalBrothers: "saudara_laki_seayah",
-  paternalSisters: "saudara_perempuan_seayah",
-  maternalBrothers: "saudara_laki_seibu",
-  maternalSisters: "saudara_perempuan_seibu",
-  fullNephews: "keponakan_kandung",
-  paternalNephews: "keponakan_seayah",
-  fullUncles: "paman_kandung",
-  paternalUncles: "paman_seayah",
-};
 let currentMethod = "khi";
 const ZERO = fraction(0, 1);
 const ONE = fraction(1, 1);
@@ -263,12 +236,12 @@ function fillForm(data) {
   });
 }
 
-async function handleSubmit(event) {
+function handleSubmit(event) {
   event.preventDefault();
-  await performCalculation();
+  performCalculation();
 }
 
-async function performCalculation() {
+function performCalculation() {
   const input = readForm();
   const validationMessage = validateInput(input);
   if (validationMessage) {
@@ -277,11 +250,11 @@ async function performCalculation() {
     return;
   }
 
-  setLoadingState(true);
-  setFormMessage(`Mengirim data ke backend FastAPI: ${API_BASE_URL}/hitung`);
-
   try {
-    const result = await requestCalculation(input);
+    const result = calculateInheritance(input);
+    if (!result?.valid) {
+      throw new Error(result?.message || "Perhitungan tidak dapat diproses.");
+    }
 
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(input));
@@ -290,12 +263,10 @@ async function performCalculation() {
     }
 
     setFormMessage("");
-    renderApiResults(result);
+    renderResults(result);
   } catch (error) {
     resultsViewElement.hidden = true;
-    setFormMessage(getClientErrorMessage(error));
-  } finally {
-    setLoadingState(false);
+    setFormMessage(error?.message || "Perhitungan tidak dapat diproses.");
   }
 }
 
@@ -346,102 +317,6 @@ function validateInput(input) {
   return "";
 }
 
-async function requestCalculation(input) {
-  const response = await fetch(`${API_BASE_URL}/hitung`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(buildApiPayload(input)),
-  });
-
-  const rawText = await response.text();
-  let payload = null;
-
-  try {
-    payload = rawText ? JSON.parse(rawText) : null;
-  } catch (error) {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    throw new Error(extractApiErrorMessage(payload, rawText));
-  }
-
-  return payload;
-}
-
-function buildApiPayload(input) {
-  const payload = {
-    harta: input.totalEstate,
-    mode: input.method,
-  };
-
-  Object.entries(FRONTEND_TO_BACKEND_FIELD_MAP).forEach(([frontendKey, backendKey]) => {
-    payload[backendKey] = input[frontendKey] ?? 0;
-  });
-
-  return payload;
-}
-
-function extractApiErrorMessage(payload, rawText) {
-  if (typeof payload?.detail === "string" && payload.detail.trim()) {
-    return payload.detail;
-  }
-
-  if (Array.isArray(payload?.detail) && payload.detail.length > 0) {
-    return payload.detail
-      .map((item) => item?.msg || item?.message || "Input tidak valid.")
-      .join(" ");
-  }
-
-  if (typeof rawText === "string" && rawText.trim()) {
-    return rawText.trim();
-  }
-
-  return "Tidak bisa menghubungi backend. Jalankan FastAPI terlebih dahulu.";
-}
-
-function getClientErrorMessage(error) {
-  if (error instanceof TypeError) {
-    return `Backend tidak dapat dihubungi di ${API_BASE_URL}. Jalankan FastAPI terlebih dahulu.`;
-  }
-  return error?.message || "Backend tidak dapat dihubungi.";
-}
-
-function setLoadingState(isLoading) {
-  if (submitButtonElement) {
-    submitButtonElement.disabled = isLoading;
-    submitButtonElement.textContent = isLoading ? "Menghubungkan Backend..." : "Hitung Pembagian";
-  }
-
-  if (resetButtonElement) {
-    resetButtonElement.disabled = isLoading;
-  }
-}
-
-function resolveApiBaseUrl() {
-  if (typeof window === "undefined") {
-    return "http://127.0.0.1:8000";
-  }
-
-  const queryApiBase = new URLSearchParams(window.location.search).get("api");
-  if (queryApiBase) {
-    return queryApiBase.replace(/\/+$/, "");
-  }
-
-  if (typeof window.WARIS_API_BASE_URL === "string" && window.WARIS_API_BASE_URL.trim()) {
-    return window.WARIS_API_BASE_URL.trim().replace(/\/+$/, "");
-  }
-
-  const host = window.location.hostname;
-  if (host === "127.0.0.1" || host === "localhost") {
-    return `${window.location.protocol}//${host}:8000`;
-  }
-
-  return "http://127.0.0.1:8000";
-}
-
 function clampNumber(value, minValue) {
   return Math.max(minValue, Math.floor(Number.isFinite(value) ? value : 0));
 }
@@ -467,7 +342,7 @@ function resolveEstate(input) {
   let distributable = input.totalEstate;
   let excludedJointAssets = 0;
 
-  if ((input.husband > 0 || input.wives > 0) && currentMethod === 'khi') {
+  if ((input.husband > 0 || input.wives > 0) && input.method === "khi") {
     excludedJointAssets = input.totalEstate / 2;
     distributable = input.totalEstate - excludedJointAssets;
     notes.push("[KHI] 1/2 harta dipisahkan lebih dahulu sebagai bagian gono-gini pasangan yang masih hidup.");
@@ -1207,7 +1082,6 @@ function finalizeOutput(input, estate, rawResult) {
       label: row.label,
       count: row.count,
       baseText: row.bases.length > 0 ? row.bases.join(" + ") : "-",
-      shareText: receives ? fractionToText(row.share) : "0",
       amountText: formatCurrency(totalAmount),
       perPersonText: receives
         ? `${formatCurrency(perPersonAmount)} (${fractionToText(perPersonShare)})`
@@ -1215,20 +1089,27 @@ function finalizeOutput(input, estate, rawResult) {
       noteText: row.notes.join(" "),
       statusClass: receives ? "receives" : "blocked",
       statusLabel: receives ? "Menerima" : "Mahjub / 0",
+      bases: [...row.bases],
       share: row.share,
+      fixedShare: row.fixedShare,
+      saham: 0,
     };
   });
 
-  // ── Saham computation ──────────────────────────────────────────
-  const receivingRows = rowList.filter((r) => compareFractions(r.share, ZERO) > 0);
-  const asalMasalah = lcmAll(receivingRows.map((r) => r.share.d)) || 1;
-  const sahamMap = {};
-  receivingRows.forEach((r) => {
-    sahamMap[r.key] = Math.round((asalMasalah * r.share.n) / r.share.d);
+  const warisDasar = buildWarisDasarResult(rowList);
+  const asalMasalah = warisDasar.asal_masalah;
+  const sahamMap = Object.fromEntries(warisDasar.hasil.map((item) => [item.nama, item.saham]));
+  rowList.forEach((row) => {
+    row.saham = sahamMap[row.key] || 0;
+    row.hasAshabahPart = hasAshabahPart(row);
+    row.shareText = formatDisplayShare(row);
+    row.statusLabel = compareFractions(row.share, ZERO) <= 0
+      ? "Mahjub / 0"
+      : row.hasAshabahPart
+      ? "Ashabah"
+      : "Menerima";
   });
-  rowList.forEach((r) => { r.saham = sahamMap[r.key] || 0; });
-  const jumlahSaham = Object.values(sahamMap).reduce((s, v) => s + v, 0);
-  // ──────────────────────────────────────────────────────────────
+  const jumlahSaham = warisDasar.jumlah_saham;
 
   return {
     valid: true,
@@ -1252,9 +1133,17 @@ function renderResults(result) {
   summaryDistributableElement.textContent = result.summary.distributable;
   summaryOriginElement.textContent = result.summary.origin + " saham";
 
-  specialCasesElement.innerHTML = result.cases.length
+  const caseMarkup = result.cases.length
     ? result.cases.map((item) => `<span class="case-chip">${item}</span>`).join("")
     : "";
+  const noteMarkup = Array.isArray(result.notes) && result.notes.length
+    ? `
+      <div class="result-notes">
+        ${result.notes.map((note) => `<div class="result-note">${note}</div>`).join("")}
+      </div>
+    `
+    : "";
+  specialCasesElement.innerHTML = `${caseMarkup}${noteMarkup}`;
 
   const { asalMasalah, jumlahSaham } = result.saham;
   const dist = result.summary.distributableRaw;
@@ -1273,7 +1162,7 @@ function renderResults(result) {
             <span class="result-status ${row.statusClass}">${row.statusLabel}</span>
           </td>
           <td>${row.count}</td>
-          <td>${row.baseText}</td>
+          <td>${row.shareText}</td>
           <td class="result-share">${row.saham > 0 ? row.saham : "-"}</td>
           <td>${hartaTotal}</td>
           <td>${hartaPerOrang}</td>
@@ -1300,85 +1189,6 @@ function renderResults(result) {
         <td colspan="3"><strong>Jumlah Saham</strong></td>
         <td class="result-share"><strong>${jumlahSaham}</strong></td>
         <td colspan="3" class="muted">Harta dibagi = ${result.summary.distributable}</td>
-      </tr>`;
-  }
-
-  focusResultsPanel();
-}
-
-function renderApiResults(result) {
-  resultsViewElement.hidden = false;
-
-  summaryEstateElement.textContent = formatCurrency(result.harta_total);
-  summaryDistributableElement.textContent = formatCurrency(result.harta_waris);
-  summaryOriginElement.textContent = `${result.asal_masalah} / ${result.patokan_pembagian} saham`;
-
-  const caseChips = [];
-  if (result.status && result.status !== "normal") {
-    caseChips.push(`<span class="case-chip">${formatCaseLabel(result.status)}</span>`);
-  }
-  if (Array.isArray(result.kasus_khusus)) {
-    result.kasus_khusus.forEach((item) => {
-      caseChips.push(`<span class="case-chip">${item}</span>`);
-    });
-  }
-  if (Number(result.harta_bersama) > 0) {
-    caseChips.push(`<span class="case-chip">Harta Bersama ${formatCurrency(result.harta_bersama)}</span>`);
-  }
-
-  const noteMarkup = Array.isArray(result.catatan) && result.catatan.length
-    ? `
-      <div class="result-notes">
-        ${result.catatan.map((note) => `<div class="result-note">${note}</div>`).join("")}
-      </div>
-    `
-    : "";
-
-  specialCasesElement.innerHTML = `${caseChips.join("")}${noteMarkup}`;
-
-  resultsBodyElement.innerHTML = (result.ahli_waris || [])
-    .map((row) => {
-      const receives = row.status !== "mahjub" && row.saham > 0;
-      const statusClass = mapRowStatusClass(row.status);
-      const statusLabel = mapRowStatusLabel(row.status);
-      const shareText =
-        row.bagian && row.bagian !== row.bagian_final && row.bagian !== "0"
-          ? `${row.bagian} -> ${row.bagian_final}`
-          : row.bagian_final || row.bagian || "0";
-      const noteText = Array.isArray(row.catatan) && row.catatan.length
-        ? row.catatan.join(" ")
-        : "Tidak ada catatan tambahan.";
-
-      return `
-        <tr>
-          <td>
-            <div><strong>${row.nama}</strong></div>
-            <span class="result-status ${statusClass}">${statusLabel}</span>
-          </td>
-          <td>${row.jumlah_orang}</td>
-          <td>${shareText}</td>
-          <td class="result-share">${row.saham > 0 ? row.saham : "-"}</td>
-          <td>${receives ? formatCurrency(row.nominal) : "-"}</td>
-          <td>${receives ? `${formatCurrency(row.nominal_per_orang)} (${row.saham_per_orang} saham/orang)` : "-"}</td>
-          <td class="muted">${noteText}</td>
-        </tr>`;
-    })
-    .join("");
-
-  if (resultsTfootElement) {
-    const statusChip = result.status && result.status !== "normal"
-      ? `<span class="case-chip" style="font-size:.8rem">${formatCaseLabel(result.status)}</span>`
-      : "";
-    resultsTfootElement.innerHTML = `
-      <tr class="tfoot-row">
-        <td colspan="3"><strong>Asal Masalah</strong></td>
-        <td class="result-share"><strong>${result.asal_masalah}</strong></td>
-        <td colspan="3">${statusChip}</td>
-      </tr>
-      <tr class="tfoot-row tfoot-hl">
-        <td colspan="3"><strong>Jumlah Saham</strong></td>
-        <td class="result-share"><strong>${result.jumlah_saham}</strong></td>
-        <td colspan="3" class="muted">Tashih akhir = ${result.patokan_pembagian} saham; Harta dibagi = ${formatCurrency(result.harta_waris)}</td>
       </tr>`;
   }
 
@@ -1420,36 +1230,6 @@ function focusResultsPanel() {
   }, prefersReducedMotion ? 0 : 1200);
 }
 
-function mapRowStatusClass(status) {
-  if (status === "ashabah") {
-    return "ashabah";
-  }
-  if (status === "furudh") {
-    return "furudh";
-  }
-  return "mahjub";
-}
-
-function mapRowStatusLabel(status) {
-  if (status === "ashabah") {
-    return "Ashabah";
-  }
-  if (status === "furudh") {
-    return "Furudh";
-  }
-  return "Mahjub / 0";
-}
-
-function formatCaseLabel(status) {
-  if (status === "aul") {
-    return "Aul";
-  }
-  if (status === "radd") {
-    return "Radd";
-  }
-  return String(status || "").replace(/^./, (letter) => letter.toUpperCase());
-}
-
 function createRows(input) {
   const rows = {};
 
@@ -1468,6 +1248,80 @@ function createRows(input) {
   });
 
   return rows;
+}
+
+function buildWarisDasarResult(rows) {
+  const bagian = rows
+    .filter((row) => compareFractions(row.share, ZERO) > 0)
+    .map((row) => ({
+      nama: row.key,
+      pembilang: row.share.n,
+      penyebut: row.share.d,
+    }));
+
+  if (bagian.length === 0) {
+    return {
+      asal_masalah: 1,
+      jumlah_saham: 0,
+      hasil: [],
+    };
+  }
+
+  const asalMasalah = lcmAll(bagian.map((item) => item.penyebut)) || 1;
+  const hasil = bagian.map((item) => ({
+    nama: item.nama,
+    saham: (item.pembilang / item.penyebut) * asalMasalah,
+  }));
+  const jumlahSaham = hasil.reduce((sum, item) => sum + item.saham, 0);
+
+  return {
+    asal_masalah: asalMasalah,
+    jumlah_saham: jumlahSaham,
+    hasil,
+  };
+}
+
+function hasAshabahPart(row) {
+  const hasShare = compareFractions(row.share, ZERO) > 0;
+  const hasFixedShare = compareFractions(row.fixedShare, ZERO) > 0;
+  const hasExtraBeyondFixed = compareFractions(row.share, row.fixedShare) > 0;
+  const hasAshabahBasis = row.bases.some((basis) => isAshabahBasis(basis));
+
+  if (!hasShare) {
+    return false;
+  }
+
+  if (hasExtraBeyondFixed) {
+    return true;
+  }
+
+  return !hasFixedShare && hasAshabahBasis;
+}
+
+function isAshabahBasis(basis) {
+  const normalized = String(basis || "").trim().toLowerCase();
+
+  return normalized === "ashabah"
+    || normalized === "am"
+    || normalized === "sisa"
+    || normalized === "sisa muqasamah"
+    || normalized === "muqasamah";
+}
+
+function formatDisplayShare(row) {
+  if (compareFractions(row.share, ZERO) <= 0) {
+    return "0";
+  }
+
+  if (!row.hasAshabahPart) {
+    return fractionToText(row.share);
+  }
+
+  if (compareFractions(row.fixedShare, ZERO) > 0) {
+    return `${fractionToText(row.fixedShare)} + Ashabah`;
+  }
+
+  return "Ashabah";
 }
 
 function awardFixed(rows, key, share, basis, note) {
